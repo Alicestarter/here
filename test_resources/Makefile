@@ -31,7 +31,7 @@ RV_LD_PROMPT := RV_LD
 RV_DUMP_PROMPT := RV_DUMP
 RV_OBJCOPY_PROMPT := RV_OBJCOPY
 
-TARGETS += main fib prime matrix_mul vector_kernels io_bench trap_test virtio_blk_test ecall_test interrupt_test float clint uart_interrupt_test calculator
+TARGETS += main fib prime matrix_mul vector_kernels io_bench trap_test virtio_blk_test ecall_test interrupt_test float clint uart_interrupt_test calculator monitor
 TARGET_ELFS := $(patsubst %,$(BIN)/%.elf,$(TARGETS))
 TARGET_DUMPS := $(patsubst %,$(DUMP)/%.dump,$(TARGETS))
 TARGET ?= main
