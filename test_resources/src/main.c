@@ -1,3 +1,4 @@
+#include "custom_ops.h"
 #include "io.h"
 #include "log.h"
 #include "power.h"
@@ -22,10 +23,39 @@ void display_section_info() {
         (uintptr_t)stack_top);
 }
 
+
+/* ---- Chapter 0x02: 自定义指令 padd8 演示 ---- */
+static int custom_instr_demo(void) {
+    uint64_t lhs = 0x0102030405060708ULL;
+    uint64_t rhs = 0x0101010101010101ULL;
+    uint64_t ret = padd8(lhs, rhs);
+
+    Log(INFO, "custom padd8: %016llx + %016llx = %016llx", lhs, rhs, ret);
+    if (ret != 0x0203040506070809ULL) {
+        Log(ERROR, "padd8 add case mismatch, expect 0x0203040506070809");
+        return -1;
+    }
+
+    /* 逐 lane 回绕：0xff + 0x01 = 0x00，结果应为 0x0000000000000000 */
+    uint64_t wrap = padd8(0xffffffffffffffffULL, 0x0101010101010101ULL);
+    Log(INFO, "custom padd8 wrap: %016llx + %016llx = %016llx", 0xffffffffffffffffULL,
+        0x0101010101010101ULL, wrap);
+    if (wrap != 0) {
+        Log(ERROR, "padd8 wrap case mismatch, expect 0x0000000000000000");
+        return -1;
+    }
+
+    Log(INFO, "custom padd8 passed");
+    return 0;
+}
+
 // 程序入口点 (由链接脚本指定)
 int main() {
     TEST_START(__BASE_FILE__);
     display_section_info();
+    if (custom_instr_demo() != 0) {
+        fail();
+    }
     printf("Hello Qemu.\nformat test: %8d %08x %4o %c %s\n", 1ll, 255ll, 15, 'c', "test");
     Log(ERROR, "error test.");
     Log(WARN, "warnning test.");

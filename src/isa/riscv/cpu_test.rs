@@ -759,6 +759,54 @@ fn test_custom_instr() {
     );
 }
 
+/// `padd8`：custom-0 空间的自定义指令（funct7=0000100, funct3=000, opcode=0001011）。
+///
+/// 语义：把 rs1 / rs2 各切成 4 个 8 位无符号 lane，对应 lane 相加，
+/// 结果按 2^8 取模后拼回 rd，高 32 位清零。
+#[cfg(feature = "custom-instr")]
+#[test]
+fn test_custom_padd8() {
+    // padd8 x6, x4, x5
+    const PADD8: u32 = (0b0000100 << 25) | (5 << 20) | (4 << 15) | (6 << 7) | 0b000_1011;
+
+    // 1) 无进位：0x0102030405060708 + 0x0101010101010101 = 0x0203040506070809
+    run_test_exec_decode(
+        PADD8,
+        |builder| {
+            builder
+                .reg(4, 0x0102_0304_0506_0708)
+                .reg(5, 0x0101_0101_0101_0101)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0x0203_0405_0607_0809).pc(0x1004),
+    );
+
+    // 2) 每个 lane 都回绕：0xfefefefe… + 0x01010101… = 0xffffffff…
+    run_test_exec_decode(
+        PADD8,
+        |builder| {
+            builder
+                .reg(4, 0xfefe_fefe_fefe_fefe)
+                .reg(5, 0x0101_0101_0101_0101)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0xffff_ffff_ffff_ffff).pc(0x1004),
+    );
+
+    // 3) lane 之间互不串味：0x00000000000000ff + 0x0000000000000001 = 0x0000000000000100
+    //    （若退化成整体 64 位加法结果相同，用下面这组把两者区分开）
+    run_test_exec_decode(
+        PADD8,
+        |builder| {
+            builder
+                .reg(4, 0x0000_0000_0000_00ff)
+                .reg(5, 0x0000_0000_0000_0001)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0x0000_0000_0000_0000).pc(0x1004),
+    );
+}
+
 #[test]
 fn test_default_csr_value() {
     let cpu = TestCPUBuilder::new().build();
