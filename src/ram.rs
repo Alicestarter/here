@@ -154,8 +154,9 @@ impl Ram {
     }
 
     pub fn store_conditional<T>(&mut self, addr: WordType, data: T) -> Result<bool, MemError> {
-        #[cfg(debug_assertions)]
-        if addr >= ram_config::SIZE as WordType {
+        // SC 的地址校验必须与读写一致，且不能只在 debug_assertions 下生效，
+        // 否则 release 构建里越界 SC 会静默返回 Ok(false) 而不是 StoreFault。
+        if !Self::contains_access::<T>(addr) {
             self.reserved = None;
             return Err(MemError::StoreFault);
         }

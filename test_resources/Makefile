@@ -63,7 +63,7 @@ $(OBJ)/boot.o: $(SRC)/boot.S
 # default lib file.
 $(OBJ)/%.o: $(LIB)/%.c
 	@ $(call echo_cmd, $(RV_CC_PROMPT), $@)
-	$(Q) mkdir $(OBJ) $(BIN) -p
+	$(Q) mkdir -p $(OBJ) $(BIN)
 	$(Q) $(RV_CC) $(RV_CFLAG) -c $^ -o $@
 
 $(BIN)/%.elf: $(OBJ)/%.o $(LIBS_OBJ) linker.ld
