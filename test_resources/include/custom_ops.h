@@ -20,3 +20,19 @@ static inline uint64_t padd8(uint64_t lhs, uint64_t rhs) {
     __asm__ volatile(".insn r 0x0b, 0, 4, %0, %1, %2" : "=r"(rd) : "r"(lhs), "r"(rhs));
     return rd;
 }
+
+/*
+ * 自定义指令 paddus8 —— custom-0 编码空间
+ *
+ *   funct7 = 0b0000101
+ *   funct3 = 0b000
+ *   opcode = 0b0001011 (0x0B)
+ *
+ * 语义：与 padd8 相同，但每个 lane 使用 8 位无符号饱和加法——
+ *       和超过 255 时钳位到 0xFF，而不是回绕到 0。
+ */
+static inline uint64_t paddus8(uint64_t lhs, uint64_t rhs) {
+    uint64_t rd;
+    __asm__ volatile(".insn r 0x0b, 0, 5, %0, %1, %2" : "=r"(rd) : "r"(lhs), "r"(rhs));
+    return rd;
+}

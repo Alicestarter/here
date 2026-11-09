@@ -759,19 +759,35 @@ fn test_custom_instr() {
     );
 }
 
-/// `padd8`：custom-0 空间的自定义指令（funct7=0000100, funct3=000, opcode=0001011）。
-///
-/// 语义：把 rs1 / rs2 各切成 4 个 8 位无符号 lane，对应 lane 相加，
-/// 结果按 2^8 取模后拼回 rd，高 32 位清零。
+// ------------------------------------------------------------------
+// custom-0: Packed-SIMD 8 位 lane 加法（padd8 / paddus8）
+// ------------------------------------------------------------------
+
+/// 组装 R 型指令字：imm = funct7，其余按标准字段排布。
+#[cfg(feature = "custom-instr")]
+const fn encode_r(funct7: u32, rs2: u32, rs1: u32, funct3: u32, rd: u32, opcode: u32) -> u32 {
+    (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
+}
+
+#[cfg(feature = "custom-instr")]
+const CUSTOM0_OPCODE: u32 = 0b000_1011;
+/// `padd8`：funct7=0000100，funct3=000（与上游模板 my_instr0_r 的 funct7=0 错开）。
+#[cfg(feature = "custom-instr")]
+const PADD8_FUNCT7: u32 = 0b0000100;
+/// `paddus8`：funct7=0000101，funct3=000。
+#[cfg(feature = "custom-instr")]
+const PADDUS8_FUNCT7: u32 = 0b0000101;
+
+/// 后端计算单元 `ExecPadd8` 的常规值验证：逐 lane 相加、互不进位。
 #[cfg(feature = "custom-instr")]
 #[test]
-fn test_custom_padd8() {
+fn test_custom_padd8_backend() {
     // padd8 x6, x4, x5
-    const PADD8: u32 = (0b0000100 << 25) | (5 << 20) | (4 << 15) | (6 << 7) | 0b000_1011;
+    let padd8 = encode_r(PADD8_FUNCT7, 5, 4, 0b000, 6, CUSTOM0_OPCODE);
 
-    // 1) 无进位：0x0102030405060708 + 0x0101010101010101 = 0x0203040506070809
+    // 1) 常规值：每个 lane 都不产生进位
     run_test_exec_decode(
-        PADD8,
+        padd8,
         |builder| {
             builder
                 .reg(4, 0x0102_0304_0506_0708)
@@ -781,22 +797,29 @@ fn test_custom_padd8() {
         |checker| checker.reg(6, 0x0203_0405_0607_0809).pc(0x1004),
     );
 
-    // 2) 每个 lane 都回绕：0xfefefefe… + 0x01010101… = 0xffffffff…
+    // 2) 全 0：结果必然为 0
     run_test_exec_decode(
-        PADD8,
-        |builder| {
-            builder
-                .reg(4, 0xfefe_fefe_fefe_fefe)
-                .reg(5, 0x0101_0101_0101_0101)
-                .pc(0x1000)
-        },
-        |checker| checker.reg(6, 0xffff_ffff_ffff_ffff).pc(0x1004),
+        padd8,
+        |builder| builder.reg(4, 0x0).reg(5, 0x0).pc(0x1000),
+        |checker| checker.reg(6, 0x0).pc(0x1004),
     );
 
-    // 3) lane 之间互不串味：0x00000000000000ff + 0x0000000000000001 = 0x0000000000000100
-    //    （若退化成整体 64 位加法结果相同，用下面这组把两者区分开）
+    // 3) 全 1：0xffff…ffff + 0xffff…ffff 每个 lane 独立回绕成 0xfe
     run_test_exec_decode(
-        PADD8,
+        padd8,
+        |builder| {
+            builder
+                .reg(4, 0xffff_ffff_ffff_ffff)
+                .reg(5, 0xffff_ffff_ffff_ffff)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0xfefe_fefe_fefe_fefe).pc(0x1004),
+    );
+
+    // 4) 进位隔离：低 lane 溢出不会向高 lane 进位
+    //    0x00ff + 0x0001 若按整字相加是 0x0100；按 lane 相加则是 0x0000
+    run_test_exec_decode(
+        padd8,
         |builder| {
             builder
                 .reg(4, 0x0000_0000_0000_00ff)
@@ -804,6 +827,95 @@ fn test_custom_padd8() {
                 .pc(0x1000)
         },
         |checker| checker.reg(6, 0x0000_0000_0000_0000).pc(0x1004),
+    );
+
+    // 5) 高 lane 的进位同理不会污染相邻 lane
+    //    0x00ff0000 + 0x00010000 = 0x00000000（整字相加会得到 0x01000000）
+    run_test_exec_decode(
+        padd8,
+        |builder| {
+            builder
+                .reg(4, 0x0000_0000_00ff_0000)
+                .reg(5, 0x0000_0000_0001_0000)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0x0000_0000_0000_0000).pc(0x1004),
+    );
+}
+
+/// `rd = x0` 时结果必须被丢弃（`execute()` 在返回后强制 `x0 = 0`）。
+#[cfg(feature = "custom-instr")]
+#[test]
+fn test_custom_padd8_rd_zero_is_discarded() {
+    // padd8 x0, x1, x2
+    let padd8 = encode_r(PADD8_FUNCT7, 2, 1, 0b000, 0, CUSTOM0_OPCODE);
+
+    run_test_exec_decode(
+        padd8,
+        |builder| {
+            builder
+                .reg(1, 0x0101_0101_0101_0101)
+                .reg(2, 0x0202_0202_0202_0202)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(0, 0).pc(0x1004),
+    );
+}
+
+/// 后端计算单元 `ExecPaddus8`：饱和加法，溢出钳位到 255。
+#[cfg(feature = "custom-instr")]
+#[test]
+fn test_custom_paddus8_backend() {
+    // paddus8 x6, x4, x5
+    let paddus8 = encode_r(PADDUS8_FUNCT7, 5, 4, 0b000, 6, CUSTOM0_OPCODE);
+
+    // 1) 饱和：0xff + 0xff = 0xff（padd8 会得到 0xfe）
+    run_test_exec_decode(
+        paddus8,
+        |builder| {
+            builder
+                .reg(4, 0xffff_ffff_ffff_ffff)
+                .reg(5, 0xffff_ffff_ffff_ffff)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0xffff_ffff_ffff_ffff).pc(0x1004),
+    );
+
+    // 2) 不饱和的部分保持精确：0x7f + 0x01 = 0x80，0x00 + 0x00 = 0x00
+    run_test_exec_decode(
+        paddus8,
+        |builder| {
+            builder
+                .reg(4, 0x0000_7f00_7f00_7f7f)
+                .reg(5, 0x0101_0100_0100_0101)
+                .pc(0x1000)
+        },
+        |checker| checker.reg(6, 0x0101_8000_8000_8080).pc(0x1004),
+    );
+}
+
+/// 流水线级验证：连续执行 addi / padd8，检查寄存器与 pc 的最终状态。
+#[cfg(feature = "custom-instr")]
+#[test]
+fn test_custom_padd8_pipeline_step() {
+    let program = [
+        0x0050_0093,                                            // addi x1, x0, 5
+        0x00a0_0113,                                            // addi x2, x0, 10
+        encode_r(PADD8_FUNCT7, 2, 1, 0b000, 3, CUSTOM0_OPCODE), // padd8 x3, x1, x2
+        encode_r(PADD8_FUNCT7, 3, 3, 0b000, 4, CUSTOM0_OPCODE), // padd8 x4, x3, x3
+    ];
+
+    run_test_cpu_step(
+        &program,
+        |builder| builder,
+        |checker| {
+            checker
+                .reg(1, 5)
+                .reg(2, 10)
+                .reg(3, 15)
+                .reg(4, 30)
+                .pc(ram_config::BASE_ADDR + 16)
+        },
     );
 }
 

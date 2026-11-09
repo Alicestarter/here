@@ -327,24 +327,12 @@ pub(in crate::isa::riscv) fn get_exec_func(
             cpu.csr.get_by_type_existing::<Minstret>().wrapping_add(1);
             Ok(())
         },
+        // Packed-SIMD 8 位 lane 加法：计算逻辑在 `ExecPadd8`，这里只做路由。
         #[cfg(feature = "custom-instr")]
-        RiscvInstr::PADD8 => |info, cpu| {
-            let RVInstrInfo::R { rs1, rs2, rd } = info else {
-                return Err(Exception::IllegalInstruction);
-            };
-
-            let (lhs, rhs) = cpu.reg_file.read(rs1, rs2);
-            let result = packed_add_u8(lhs, rhs);
-
-            log::info!(
-                "[CustomInstr] PADD8: x{rd} = x{rs1}({lhs:#x}) + x{rs2}({rhs:#x}) = {result:#x}"
-            );
-
-            super::normal_exec(cpu, |cpu| {
-                cpu.reg_file.write(rd, result);
-                Ok(())
-            })
-        },
+        RiscvInstr::PADD8 => exec_arith::<ExecPadd8>,
+        // Packed-SIMD 8 位 lane 饱和加法：溢出时钳位到 255 而不是回绕。
+        #[cfg(feature = "custom-instr")]
+        RiscvInstr::PADDUS8 => exec_arith::<ExecPaddus8>,
 
         //---------------------------------------
         // RV_S
@@ -1084,19 +1072,4 @@ pub(in crate::isa::riscv) fn get_exec_func(
         RiscvInstr::VSLIDE1UP_VX => vec_integer_spec_op::<{ vector_spec_instr::SLIDE1UP_VX }>,
         RiscvInstr::VSLIDE1DOWN_VX => vec_integer_spec_op::<{ vector_spec_instr::SLIDE1DOWN_VX }>,
     }
-}
-
-/// `padd8` 的语义实现：把两个操作数各切成若干个 8 位 lane，
-/// 对应 lane 相加后按 2^8 取模，再拼回一个字（高半部分清零）。
-#[cfg(feature = "custom-instr")]
-#[inline]
-fn packed_add_u8(lhs: WordType, rhs: WordType) -> WordType {
-    let mut result = 0;
-    let mut shift = 0;
-    while shift < WordType::BITS {
-        let lane_sum = ((lhs >> shift) & 0xff) + ((rhs >> shift) & 0xff);
-        result |= (lane_sum & 0xff) << shift;
-        shift += 8;
-    }
-    result
 }

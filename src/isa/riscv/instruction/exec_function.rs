@@ -933,3 +933,61 @@ where
         a >= b
     }
 }
+
+// ======================================
+//   RV_Custom: Packed-SIMD 计算单元
+// ======================================
+
+/// 一个字被切分出的 8 位 lane 数量（RV64 为 8 个）。
+#[cfg(feature = "custom-instr")]
+const PACKED_U8_LANES: usize = size_of::<WordType>();
+
+/// `padd8 rd, rs1, rs2`：Packed-SIMD 8 位无符号加法。
+///
+/// 每个 lane 独立执行 8 位环绕（wrapping）加法，lane 之间物理切断进位链，
+/// 因此低位 lane 溢出不会污染高一位 lane（Carry Isolation）。
+#[cfg(feature = "custom-instr")]
+pub(in super::super) struct ExecPadd8;
+
+#[cfg(feature = "custom-instr")]
+impl ExecTrait<Result<WordType, Exception>> for ExecPadd8 {
+    fn exec(a: WordType, b: WordType) -> Result<WordType, Exception> {
+        let lhs = a.to_le_bytes();
+        let rhs = b.to_le_bytes();
+        let mut lanes = [0u8; PACKED_U8_LANES];
+
+        for (idx, lane) in lanes.iter_mut().enumerate() {
+            // 只在本 lane 内做 8 位环绕加法，进位不会跨 lane 传播。
+            *lane = lhs[idx].wrapping_add(rhs[idx]);
+        }
+
+        let result = WordType::from_le_bytes(lanes);
+        log::info!("[CustomInstr] padd8: {a:#x} + {b:#x} = {result:#x}");
+        Ok(result)
+    }
+}
+
+/// `paddus8 rd, rs1, rs2`：Packed-SIMD 8 位无符号饱和加法。
+///
+/// 与 [`ExecPadd8`] 的区别在于溢出行为：一旦某个 lane 的和超过 `u8::MAX`，
+/// 该 lane 被钳位（clamp）在 255，而不是回绕到 0。音视频与图像处理中
+/// 用它避免高光溢出后变黑。
+#[cfg(feature = "custom-instr")]
+pub(in super::super) struct ExecPaddus8;
+
+#[cfg(feature = "custom-instr")]
+impl ExecTrait<Result<WordType, Exception>> for ExecPaddus8 {
+    fn exec(a: WordType, b: WordType) -> Result<WordType, Exception> {
+        let lhs = a.to_le_bytes();
+        let rhs = b.to_le_bytes();
+        let mut lanes = [0u8; PACKED_U8_LANES];
+
+        for (idx, lane) in lanes.iter_mut().enumerate() {
+            *lane = lhs[idx].saturating_add(rhs[idx]);
+        }
+
+        let result = WordType::from_le_bytes(lanes);
+        log::info!("[CustomInstr] paddus8: {a:#x} + {b:#x} = {result:#x}");
+        Ok(result)
+    }
+}

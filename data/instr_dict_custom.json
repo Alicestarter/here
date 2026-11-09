@@ -39,5 +39,19 @@
         ],
         "match": "0x800000b",
         "mask": "0xfe00707f"
+    },
+
+    "paddus8": {
+        "encoding": "0000101----------000-----0001011",
+        "variable_fields": [
+            "rd",
+            "rs1",
+            "rs2"
+        ],
+        "extension": [
+            "rv_custom0"
+        ],
+        "match": "0xa00000b",
+        "mask": "0xfe00707f"
     }
 }

@@ -117,3 +117,77 @@ git commit -m "feat(ch2): add custom padd8 SIMD instruction"
 git tag ch2自定义指令
 git push origin master --tags
 ```
+
+---
+
+# Chapter 0x03：后端执行架构与自定义计算单元
+
+## 1. 从「执行臂内联」到「计算单元 + 路由」
+
+Chapter 0x02 把 lane 加法直接写进了 `exec_mapping.rs` 的执行臂里（闭包内联）。
+Chapter 0x03 把它下沉为一等公民的**计算单元**：
+
+| 层 | 文件 | 职责 |
+| --- | --- | --- |
+| 译码层 | `data/instr_dict_custom.json` | 指令字 → `RiscvInstr::PADD8` / `RiscvInstr::PADDUS8` |
+| 路由层 | `src/isa/riscv/instruction/exec_mapping.rs` | `=> exec_arith::<ExecPadd8>`，只做分派 |
+| 计算层 | `src/isa/riscv/instruction/exec_function.rs` | `impl ExecTrait<Result<WordType, Exception>>`，纯粹的 lane 运算 |
+| 框架层 | `exec_arith` / `normal_exec` | 取操作数 → 写 rd → `pc += 4` → `Minstret += 1` |
+
+这样做的收益：
+
+- 计算逻辑与「指令长什么样」解耦，`ExecPadd8` 可以被 R 型、I 型甚至向量指令复用；
+- `exec_arith` 统一负责 `rd` 写入与 PC 推进，异常时（`?`）提前返回，不会污染 CPU 状态；
+- `RVCPU::execute` 在分派返回后无条件执行 `reg_file[0] = 0`，因此 `rd = x0` 的写入天然被丢弃。
+
+## 2. 计算单元
+
+```rust
+pub(in super::super) struct ExecPadd8;
+
+impl ExecTrait<Result<WordType, Exception>> for ExecPadd8 {
+    fn exec(a: WordType, b: WordType) -> Result<WordType, Exception> {
+        let lhs = a.to_le_bytes();
+        let rhs = b.to_le_bytes();
+        let mut lanes = [0u8; PACKED_U8_LANES];
+        for (idx, lane) in lanes.iter_mut().enumerate() {
+            *lane = lhs[idx].wrapping_add(rhs[idx]); // 进位链在 lane 边界被切断
+        }
+        Ok(WordType::from_le_bytes(lanes))
+    }
+}
+```
+
+`ExecPaddus8` 的唯一区别是把 `wrapping_add` 换成 `saturating_add`（溢出钳位 255）。
+
+## 3. 路由
+
+```rust
+#[cfg(feature = "custom-instr")]
+RiscvInstr::PADD8 => exec_arith::<ExecPadd8>,
+#[cfg(feature = "custom-instr")]
+RiscvInstr::PADDUS8 => exec_arith::<ExecPaddus8>,
+```
+
+## 4. 验证
+
+Rust 侧（`src/isa/riscv/cpu_test.rs`）：
+
+```bash
+cargo test --features custom-instr --lib custom
+```
+
+- `test_custom_padd8_backend`：常规值 / 全 0 / 全 1 / 低 lane 进位隔离 / 中 lane 进位隔离
+- `test_custom_padd8_rd_zero_is_discarded`：`rd = x0` 结果被丢弃，`x0` 恒为 0
+- `test_custom_paddus8_backend`：饱和（0xff+0xff=0xff）与非饱和（0x7f+0x01=0x80）分支
+- `test_custom_padd8_pipeline_step`：`addi / addi / padd8 / padd8` 四条指令连续 step，检查 `x3=15`、`x4=30`、`pc = BASE_ADDR + 16`
+
+C 侧（`test_resources/src/main.c`）：
+
+```bash
+cargo run --features custom-instr -- ./test_resources/bin/main.elf
+```
+
+`custom_golden_demo()` 用 `golden_padd8` / `golden_paddus8` 两个软件参考模型，
+对 10 组测试向量（常规值、全 0、全 1、低/中 lane 进位隔离、饱和边界、随机混合）
+逐条比对硬件执行结果，打印 `[PASS]/[FAIL]` 并统计通过数。
