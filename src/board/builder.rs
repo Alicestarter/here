@@ -303,8 +303,8 @@ mod native {
     use crate::{
         DeviceConfig,
         device::virtio::{
-            virtio_block::VirtIOBlkDeviceBuilder, virtio_device::VirtIODeviceEnum,
-            virtio_mmio::VirtIOMMIO,
+            virtio_block::VirtIOBlkDeviceBuilder, virtio_console::VirtIOConsoleDeviceBuilder,
+            virtio_device::VirtIODeviceEnum, virtio_mmio::VirtIOMMIO,
         },
     };
 
@@ -316,24 +316,52 @@ mod native {
             irq: PeriphIrqId,
             config: DeviceConfig,
         ) -> Self {
-            let virtio_device = match config.dev_type {
+            use crate::device::virtio::virtio_device::VirtIODeviceTrait;
+
+            // Both device kinds erase into the same trait object the MMIO
+            // transport drives, so a console and a block device are
+            // interchangeable from the PLIC/MMIO point of view.
+            let virtio_device: Box<UnsafeCell<dyn VirtIODeviceTrait>> = match config.dev_type {
                 VirtIODeviceEnum::VirtIOBlock => {
                     let ram_base = unsafe { &mut self.ram_ref.as_mut_unchecked()[0] as *mut u8 };
-                    VirtIOBlkDeviceBuilder::new(
-                        ram_base,
-                        String::from(config.path.to_str().unwrap()),
-                    )
-                    .host_feature(
-                        crate::device::virtio::virtio_block::VirtIOBlockFeature::BlockSize,
-                    )
-                    .host_feature(crate::device::virtio::virtio_block::VirtIOBlockFeature::Flush)
-                    .get_and_spawner_task(&mut self.spawner)
+                    Box::new(UnsafeCell::new(
+                        VirtIOBlkDeviceBuilder::new(
+                            ram_base,
+                            String::from(config.path.to_str().unwrap()),
+                        )
+                        .host_feature(
+                            crate::device::virtio::virtio_block::VirtIOBlockFeature::BlockSize,
+                        )
+                        .host_feature(
+                            crate::device::virtio::virtio_block::VirtIOBlockFeature::Flush,
+                        )
+                        .get_and_spawner_task(&mut self.spawner),
+                    ))
+                }
+                VirtIODeviceEnum::VirtIOConsole => {
+                    let ram_base = unsafe { &mut self.ram_ref.as_mut_unchecked()[0] as *mut u8 };
+                    // A console has no backing image: an empty path means "use the
+                    // default greeting the guest can read back from receiveq",
+                    // otherwise the path names a file whose bytes are preloaded.
+                    let input = if config.path.as_os_str().is_empty() {
+                        b"virtio console input ok\n".to_vec()
+                    } else {
+                        std::fs::read(&config.path).unwrap_or_else(|err| {
+                            panic!("failed to read console input {:?}: {err}", config.path)
+                        })
+                    };
+                    Box::new(UnsafeCell::new(
+                        VirtIOConsoleDeviceBuilder::new(ram_base)
+                            .name("VirtIO Console")
+                            .input_bytes(&input)
+                            .get_and_spawner_task(&mut self.spawner),
+                    ))
                 }
                 dev_type => {
                     panic!("unsupport device: {:#?}", dev_type);
                 }
             };
-            let virtio_mmio_device = VirtIOMMIO::new(Box::new(UnsafeCell::new(virtio_device)));
+            let virtio_mmio_device = VirtIOMMIO::new(virtio_device);
             self.add_plic_device(Box::new(virtio_mmio_device), base, size, irq)
         }
     }

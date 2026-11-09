@@ -54,10 +54,12 @@ impl FromStr for DeviceConfig {
         let dev_type = match parts.next() {
             Some("virtio-block") => VirtIODeviceEnum::VirtIOBlock,
             Some("virtio-network") => VirtIODeviceEnum::VirtIONet,
+            Some("virtio-console") => VirtIODeviceEnum::VirtIOConsole,
             Some(other) => return Err(format!("Unknown device type: {}", other)),
             None => return Err("Invalid device arguments.".into()),
         };
-        let path = PathBuf::from(parts.next().ok_or("Need input a device path.")?);
+        // `virtio-console` is backed by the host terminal, so a path is optional.
+        let path = PathBuf::from(parts.next().unwrap_or_default());
         Ok(DeviceConfig { dev_type, path })
     }
 }
